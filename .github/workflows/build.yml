@@ -1,0 +1,69 @@
+name: Build LaunchNext
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'public/**'
+
+jobs:
+  build:
+    name: Build Universal App
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode & Swift Version
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Precompile SwiftUpdater
+        run: |
+          echo "Building SwiftUpdater dependency..."
+          cd UpdaterScripts/SwiftUpdater
+          swift build --configuration release --arch arm64 --arch x86_64 --product SwiftUpdater
+          cd ../..
+
+      - name: Build LaunchNext
+        run: |
+          echo "Compiling LaunchNext with Ad-Hoc signature..."
+          xcodebuild -project LaunchNext.xcodeproj \
+            -scheme LaunchNext \
+            -configuration Release \
+            ARCHS="arm64 x86_64" \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM="" \
+            clean build
+
+      - name: Package App Bundle
+        run: |
+          BUILT_PRODUCTS_DIR="$(xcodebuild -project LaunchNext.xcodeproj -scheme LaunchNext -configuration Release -showBuildSettings | awk -F ' = ' '/^[[:space:]]*BUILT_PRODUCTS_DIR = / { print $2 }' | tail -n 1)"
+          APP_PATH="${BUILT_PRODUCTS_DIR}/LaunchNext.app"
+          
+          if [[ ! -d "${APP_PATH}" ]]; then
+            echo "Error: LaunchNext.app not found at ${APP_PATH}" >&2
+            exit 1
+          fi
+
+          echo "Found compiled app at: ${APP_PATH}"
+          ditto -c -k --sequesterRsrc --keepParent "${APP_PATH}" "LaunchNext-main.zip"
+          shasum -a 256 "LaunchNext-main.zip" > "checksums.txt"
+          cat "checksums.txt"
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaunchNext-Universal-App
+          path: |
+            LaunchNext-main.zip
+            checksums.txt
+          retention-days: 14
