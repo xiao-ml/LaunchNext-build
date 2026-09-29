@@ -298,9 +298,56 @@ struct LaunchpadView: View {
              if id == nil { folderAppToReveal = nil }
          }
     }
+ 
+    @ViewBuilder
+    private func attachBackgroundObservers<V: View>(to view: V) -> some View {
+        view
+            .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.activeSpaceDidChangeNotification)) { _ in
+                WallpaperDiagnostics.record("context.spaceChanged")
+                refreshBackgroundImage(reason: .contextChecked)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeScreenNotification)) { notification in
+                guard let changedWindow = notification.object as? NSWindow,
+                      changedWindow === AppDelegate.shared?.launchpadWindow else { return }
+                refreshBackgroundImage(reason: .contextChecked)
+            }
+            .onChange(of: appStore.backgroundImageEnabled) { _, _ in
+                refreshBackgroundImage(reason: .settingsChanged)
+            }
+            .onChange(of: appStore.launchpadBackgroundStyle) { old, new in
+                guard (old == .unfiltered) != (new == .unfiltered) else { return }
+                refreshBackgroundImage(reason: .settingsChanged)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)
+                .merge(with: NotificationCenter.default.publisher(for: NSWindow.didEndLiveResizeNotification))
+                .filter { notification in
+                    guard let window = notification.object as? NSWindow else { return false }
+                    return window === AppDelegate.shared?.launchpadWindow
+                }
+                .debounce(for: .milliseconds(200), scheduler: RunLoop.main)) { notification in
+                guard appStore.backgroundImageEnabled, appStore.launchpadBackgroundStyle == .unfiltered,
+                      let window = notification.object as? NSWindow,
+                      window === AppDelegate.shared?.launchpadWindow, !window.inLiveResize else { return }
+                refreshBackgroundImage(reason: .viewportChanged)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .wallpaperCapturePermissionChanged)) { _ in
+                refreshBackgroundImage(reason: .settingsChanged)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                if appStore.backgroundImageEnabled && appStore.backgroundImageSource == .desktopWallpaper {
+                    WallpaperCaptureAccess.shared.refresh()
+                }
+            }
+            .onChange(of: appStore.backgroundImageSource) { _, _ in
+                refreshBackgroundImage(reason: .settingsChanged)
+            }
+            .onChange(of: appStore.customBackgroundImagePath) { _, _ in
+                refreshBackgroundImage(reason: .settingsChanged)
+            }
+    }
 
     private var launchpadEventBoundView: some View {
-        launchpadBaseView
+        let baseWithEvents = launchpadBaseView
         .sheet(isPresented: $appStore.isSetting) {
             SettingsView(appStore: appStore)
         }
@@ -329,68 +376,24 @@ struct LaunchpadView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: appStore.showFPSOverlay)
-         .onChange(of: appStore.items) {
-             guard draggingItem == nil else { return }
-             clampSelection()
-             let maxPageIndex = max(pages.count - 1, 0)
-             if appStore.currentPage > maxPageIndex {
-                 appStore.currentPage = maxPageIndex
-             }
-          }
-          .onChange(of: isSearchFieldFocused) { _, focused in
-             if focused { isKeyboardNavigationActive = false }
-         }
-         .onReceive(ControllerInputManager.shared.commands) { command in
-             appStore.layoutRevealRequest = nil
-             handleControllerCommand(command)
-         }
-         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.activeSpaceDidChangeNotification)) { _ in
-             WallpaperDiagnostics.record("context.spaceChanged")
-             refreshBackgroundImage(reason: .contextChecked)
-         }
-         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeScreenNotification)) { notification in
-             guard let changedWindow = notification.object as? NSWindow,
-                   changedWindow === AppDelegate.shared?.launchpadWindow else { return }
-             // A window can report its screen again when it is shown. Validate
-             // the display/context instead of discarding a settled frame.
-             refreshBackgroundImage(reason: .contextChecked)
-         }
-         .onChange(of: appStore.backgroundImageEnabled) { _, _ in
-             refreshBackgroundImage(reason: .settingsChanged)
-         }
-         .onChange(of: appStore.launchpadBackgroundStyle) { old, new in
-             guard (old == .unfiltered) != (new == .unfiltered) else { return }
-             refreshBackgroundImage(reason: .settingsChanged)
-         }
-         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)
-             .merge(with: NotificationCenter.default.publisher(for: NSWindow.didEndLiveResizeNotification))
-             .filter { notification in
-                 guard let window = notification.object as? NSWindow else { return false }
-                 return window === AppDelegate.shared?.launchpadWindow
-             }
-             .debounce(for: .milliseconds(200), scheduler: RunLoop.main)) { notification in
-             guard appStore.backgroundImageEnabled, appStore.launchpadBackgroundStyle == .unfiltered,
-                   let window = notification.object as? NSWindow,
-                   window === AppDelegate.shared?.launchpadWindow, !window.inLiveResize else { return }
-             refreshBackgroundImage(reason: .viewportChanged)
-         }
-         .onReceive(NotificationCenter.default.publisher(for: .wallpaperCapturePermissionChanged)) { _ in
-             refreshBackgroundImage(reason: .settingsChanged)
-         }
-         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-             if appStore.backgroundImageEnabled,
-                appStore.backgroundImageSource == .desktopWallpaper {
-                 WallpaperCaptureAccess.shared.refresh()
-             }
-         }
-         .onChange(of: appStore.backgroundImageSource) { _, _ in
-             refreshBackgroundImage(reason: .settingsChanged)
-         }
-         .onChange(of: appStore.customBackgroundImagePath) { _, _ in
-             refreshBackgroundImage(reason: .settingsChanged)
-         }
+        .onChange(of: appStore.items) {
+            guard draggingItem == nil else { return }
+            clampSelection()
+            let maxPageIndex = max(pages.count - 1, 0)
+            if appStore.currentPage > maxPageIndex {
+                appStore.currentPage = maxPageIndex
+            }
+        }
+        .onChange(of: isSearchFieldFocused) { _, focused in
+            if focused { isKeyboardNavigationActive = false }
+        }
+        .onReceive(ControllerInputManager.shared.commands) { command in
+            appStore.layoutRevealRequest = nil
+            handleControllerCommand(command)
+        }
 
-           .onAppear {
+        return attachBackgroundObservers(to: baseWithEvents)
+            .onAppear {
               if !appStore.shouldShowOnboarding {
                   appStore.performInitialScanIfNeeded()
                   checkCacheStatus()
@@ -2070,14 +2073,14 @@ private struct FirstLaunchOnboardingPanel: View {
 extension LaunchpadView {
     private func startFPSMonitoring() {
         stopFPSMonitoring()
-        if let monitor = FPSMonitor { fps, frameDelta in
+        if let monitor = FPSMonitor(callback: { fps, frameDelta in
             let clamped = max(0, min(fps, 240))
             DispatchQueue.main.async {
                 let smoothed = fpsValue * 0.8 + clamped * 0.2
                 fpsValue = smoothed
                 frameTimeMilliseconds = frameDelta * 1000
             }
-        } {
+        }) {
             fpsMonitor = monitor
         }
     }

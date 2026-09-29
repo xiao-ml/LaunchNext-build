@@ -165,7 +165,10 @@ private func makeAppKitContextMenu(
                     ? redMenuSymbolImage(named: symbolName)
                     : NSImage(systemSymbolName: symbolName, accessibilityDescription: title)
                 if #available(macOS 27.0, *) {
-                    item.preferredImageVisibility = .visible
+                    let selector = NSSelectorFromString("setPreferredImageVisibility:")
+                    if item.responds(to: selector) {
+                        item.setValue(1, forKey: "preferredImageVisibility")
+                    }
                 }
             }
             if descriptor.role == .destructive {
